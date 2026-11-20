@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cuervo Clavier</string>
+    <string name="a11y_description">Permet au clavier de lire le texte affiché à l\'écran, uniquement quand tu touches le bouton « Répondre », pour proposer une réponse. Rien n\'est lu en continu.</string>
+</resources>
