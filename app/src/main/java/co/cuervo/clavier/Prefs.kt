@@ -8,6 +8,7 @@ object Prefs {
     private const val KEY_URL = "ai_url"
     private const val KEY_KEY = "ai_key"
     private const val KEY_LAYOUT = "layout"
+    private const val KEY_AUTOFIX = "autofix"
 
     private fun p(ctx: Context) = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -24,5 +25,12 @@ object Prefs {
 
     fun setLayout(ctx: Context, value: String) {
         p(ctx).edit().putString(KEY_LAYOUT, value).apply()
+    }
+
+    /** Correction automatique des mots français (activée par défaut). */
+    fun autoCorrect(ctx: Context): Boolean = p(ctx).getBoolean(KEY_AUTOFIX, true)
+
+    fun setAutoCorrect(ctx: Context, on: Boolean) {
+        p(ctx).edit().putBoolean(KEY_AUTOFIX, on).apply()
     }
 }

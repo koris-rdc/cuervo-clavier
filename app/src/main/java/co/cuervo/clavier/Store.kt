@@ -6,6 +6,97 @@ import org.json.JSONObject
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences("cuervo_data", Context.MODE_PRIVATE)
 
+/** Dictionnaire français (20 000 mots courants, du plus fréquent au moins fréquent) : suggestions et correction. */
+object FrDict {
+    @Volatile private var rank: HashMap<String, Int>? = null
+    @Volatile private var list: List<String> = emptyList()
+    @Volatile private var loading = false
+    private const val ALPHA = "abcdefghijklmnopqrstuvwxyzàâçéèêëîïôùûüÿœ"
+
+    fun load(ctx: Context) {
+        if (rank != null || loading) return
+        loading = true
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                val words = app.assets.open("fr_words.txt").bufferedReader(Charsets.UTF_8).readLines()
+                val m = HashMap<String, Int>(words.size * 2)
+                words.forEachIndexed { i, w -> m[w] = i }
+                list = words
+                rank = m
+            } catch (e: Exception) {
+            } finally {
+                loading = false
+            }
+        }.start()
+    }
+
+    fun ready(): Boolean = rank != null
+
+    fun prefix(p: String, n: Int, skip: Collection<String>): List<String> {
+        val out = ArrayList<String>()
+        for (w in list) {
+            if (out.size >= n) break
+            if (w.length > p.length && w.startsWith(p) && w !in skip) out.add(w)
+        }
+        return out
+    }
+
+    private fun stripAccents(s: String): String {
+        val sb = StringBuilder()
+        for (c in s) sb.append(
+            when (c) {
+                'à', 'â' -> 'a'
+                'ç' -> 'c'
+                'é', 'è', 'ê', 'ë' -> 'e'
+                'î', 'ï' -> 'i'
+                'ô' -> 'o'
+                'ù', 'û', 'ü' -> 'u'
+                'ÿ' -> 'y'
+                else -> c
+            }
+        )
+        return sb.toString()
+    }
+
+    private fun edits1(w: String): Set<String> {
+        val out = HashSet<String>()
+        for (i in w.indices) {
+            out.add(w.removeRange(i, i + 1))
+            if (i + 1 < w.length) out.add(w.substring(0, i) + w[i + 1] + w[i] + w.substring(i + 2))
+            for (c in ALPHA) if (c != w[i]) out.add(w.substring(0, i) + c + w.substring(i + 1))
+        }
+        for (i in 0..w.length) for (c in ALPHA) out.add(w.substring(0, i) + c + w.substring(i))
+        return out
+    }
+
+    /** Le mot corrigé, ou null si le mot est correct, inconnu sans correction évidente, ou si on ne sait pas. */
+    fun correct(ctx: Context, typed: String): String? {
+        val m = rank ?: return null
+        val w = typed.lowercase()
+        if (w.length < 3 || w.length > 20 || !w.all { it.isLetter() }) return null
+        if (WordStore.isSaved(ctx, w)) return null
+        val own = m[w]
+        var best: String? = null
+        var bestRank = Int.MAX_VALUE
+        for (c in edits1(w)) {
+            val r = m[c] ?: continue
+            if (r < bestRank) {
+                bestRank = r
+                best = c
+            }
+        }
+        val b = best ?: return null
+        if (own == null) {
+            if (w.length <= 4 && bestRank > 5000) return null
+            return b
+        }
+        // Mot connu : on ne corrige que l'oubli d'accent évident (etre → être, tres → très).
+        if (own > 300 && stripAccents(b) == w && b != w && bestRank * 6 < own) return b
+        return null
+    }
+}
+
 /** Historique du presse-papier : les textes copiés ou coupés, le plus récent en premier. */
 object ClipStore {
     private const val KEY = "clips"
@@ -136,6 +227,10 @@ object WordStore {
             .filter { it.value >= 2 && it.key.startsWith(p) && it.key != p }
             .sortedByDescending { it.value }
             .forEach { if (out.size < n) out.add(it.key) }
+        if (FrDict.ready()) {
+            if (out.size < n) out.addAll(FrDict.prefix(p, n - out.size, out))
+            return out
+        }
         for (w in BUILTIN) {
             if (out.size >= n) break
             if (w.startsWith(p) && w != p && w !in out) out.add(w)

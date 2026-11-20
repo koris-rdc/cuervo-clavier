@@ -42,6 +42,8 @@ class SettingsActivity : Activity() {
     private lateinit var keyField: EditText
     private lateinit var emojiBox: LinearLayout
     private lateinit var segQwerty: TextView
+    private lateinit var segFixOn: TextView
+    private lateinit var segFixOff: TextView
     private lateinit var segAzerty: TextView
 
     private val animated = ArrayList<View>()
@@ -95,6 +97,21 @@ class SettingsActivity : Activity() {
         layoutCard.addView(seg, topMargin(12))
         col.addView(layoutCard)
         refreshSegments()
+
+        // Correction des mots
+        val fixCard = card()
+        fixCard.addView(cardTitle("Correction des mots", "Corrige les fautes de frappe en français quand tu tapes un espace. Un retour arrière juste après remet ton mot."))
+        val fixSeg = LinearLayout(this)
+        fixSeg.orientation = LinearLayout.HORIZONTAL
+        fixSeg.background = Ui.round(Ui.PAPER, dp(14))
+        fixSeg.setPadding(dp(4), dp(4), dp(4), dp(4))
+        segFixOn = segment("Activée") { chooseFix(true) }
+        segFixOff = segment("Désactivée") { chooseFix(false) }
+        fixSeg.addView(segFixOn, LinearLayout.LayoutParams(0, dp(42), 1f))
+        fixSeg.addView(segFixOff, LinearLayout.LayoutParams(0, dp(42), 1f))
+        fixCard.addView(fixSeg, topMargin(12))
+        col.addView(fixCard)
+        refreshFix()
 
         // IA
         val ia = card()
@@ -333,6 +350,18 @@ class SettingsActivity : Activity() {
             row.addView(b, LinearLayout.LayoutParams(WRAP, dp(36)))
         }
         return row
+    }
+
+    private fun chooseFix(on: Boolean) {
+        Prefs.setAutoCorrect(this, on)
+        refreshFix()
+        toast(if (on) "Correction automatique activée" else "Correction automatique désactivée")
+    }
+
+    private fun refreshFix() {
+        val on = Prefs.autoCorrect(this)
+        styleSegment(segFixOn, on)
+        styleSegment(segFixOff, !on)
     }
 
     private fun chooseLayout(value: String) {

@@ -95,7 +95,9 @@ class CuervoIME : InputMethodService() {
     private lateinit var undoChip: TextView
     private lateinit var suggestStrip: LinearLayout
     private lateinit var clipBox: LinearLayout
-    private var textField = false        // champ de texte normal (suggestions actives)
+    private var textField = false        // champ de texte (boutons IA)
+    private var fixOn = false            // suggestions et correction automatique actives
+    private var lastAuto: Triple<String, String, String>? = null   // mot tapé, mot corrigé, séparateur
 
     private val letterKeys = ArrayList<Pair<TextView, String>>()
     private var shiftIcon: ImageView? = null
@@ -123,6 +125,7 @@ class CuervoIME : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        FrDict.load(this)
         try {
             (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).addPrimaryClipChangedListener(clipListener)
         } catch (e: Exception) {
@@ -260,6 +263,13 @@ class CuervoIME : InputMethodService() {
         }
 
         textField = isText && !secure
+        fixOn = textField && variation != InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS &&
+                variation != InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS &&
+                variation != InputType.TYPE_TEXT_VARIATION_URI &&
+                variation != InputType.TYPE_TEXT_VARIATION_FILTER &&
+                variation != InputType.TYPE_TEXT_VARIATION_PERSON_NAME &&
+                (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) == 0
+        lastAuto = null
         chipRow.visibility = if (textField) View.VISIBLE else View.INVISIBLE
         closeAccents()
         status.visibility = View.GONE
@@ -433,8 +443,15 @@ class CuervoIME : InputMethodService() {
 
     private fun commit(text: String) {
         val ic = currentInputConnection ?: return
-        if (textField && text.isNotEmpty() && !text[0].isLetter()) learnCurrentWord()
-        ic.commitText(text, 1)
+        lastAuto = null
+        if (fixOn && text.isNotEmpty() && !text[0].isLetter()) {
+            val fixed = autoCorrect()
+            if (fixed == null) learnCurrentWord() else WordStore.learn(this, fixed.second)
+            ic.commitText(text, 1)
+            if (fixed != null) lastAuto = Triple(fixed.first, fixed.second, text)
+        } else {
+            ic.commitText(text, 1)
+        }
         if (autoCap && text == " ") {
             val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
             if (before == ". " || before == "? " || before == "! ") {
@@ -448,6 +465,22 @@ class CuervoIME : InputMethodService() {
     private fun deleteBack() {
         val ic = currentInputConnection ?: return
         val sel = ic.getSelectedText(0)
+        val la = lastAuto
+        lastAuto = null
+        if (la != null && sel.isNullOrEmpty()) {
+            // Premier retour arrière après une correction : on rend le mot tel que tu l'avais tapé.
+            val tail = la.second + la.third
+            if (ic.getTextBeforeCursor(tail.length, 0)?.toString() == tail) {
+                ic.beginBatchEdit()
+                ic.deleteSurroundingText(tail.length, 0)
+                ic.commitText(la.first, 1)
+                ic.endBatchEdit()
+                WordStore.learn(this, la.first, true)
+                showStatus("« ${la.first} » gardé tel quel.", 2000)
+                updateSuggestions()
+                return
+            }
+        }
         if (!sel.isNullOrEmpty()) ic.commitText("", 1) else sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
         updateSuggestions()
     }
@@ -461,6 +494,33 @@ class CuervoIME : InputMethodService() {
         return before.substring(i)
     }
 
+    /** Corrige le mot qui précède le curseur. Renvoie (mot tapé, mot corrigé) ou null si rien n'a changé. */
+    private fun autoCorrect(): Pair<String, String>? {
+        if (!Prefs.autoCorrect(this)) return null
+        val ic = currentInputConnection ?: return null
+        val before = ic.getTextBeforeCursor(40, 0)?.toString() ?: return null
+        var i = before.length
+        while (i > 0 && before[i - 1].isLetter()) i--
+        val typed = before.substring(i)
+        if (typed.length < 3) return null
+        if (i > 0 && before[i - 1] in "0123456789@/#_.:") return null
+        if (typed[0].isUpperCase()) {
+            val sentenceStart = before.substring(0, i).trimEnd(' ', '\t').let { it.isEmpty() || it.last() in ".!?\n" }
+            val normalCap = typed.length > 1 && typed.substring(1).all { it.isLowerCase() }
+            if (!sentenceStart || !normalCap) return null
+        } else if (typed.any { it.isUpperCase() }) {
+            return null
+        }
+        val fixed = FrDict.correct(this, typed) ?: return null
+        val out = if (typed[0].isUpperCase()) fixed.replaceFirstChar { it.uppercase() } else fixed
+        if (out == typed) return null
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(typed.length, 0)
+        ic.commitText(out, 1)
+        ic.endBatchEdit()
+        return Pair(typed, out)
+    }
+
     private fun learnCurrentWord() {
         val w = currentWord()
         if (w.length >= 3) WordStore.learn(this, w)
@@ -471,7 +531,7 @@ class CuervoIME : InputMethodService() {
 
     private fun updateSuggestions() {
         if (!::suggestStrip.isInitialized) return
-        val word = if (textField && layer == 0) currentWord() else ""
+        val word = if (fixOn && layer == 0) currentWord() else ""
         if (word.isEmpty()) {
             suggestStrip.visibility = View.GONE
             return
@@ -518,6 +578,7 @@ class CuervoIME : InputMethodService() {
 
     private fun applySuggestion(typed: String, sugg: String) {
         val ic = currentInputConnection ?: return
+        lastAuto = null
         ic.beginBatchEdit()
         ic.deleteSurroundingText(typed.length, 0)
         ic.commitText("$sugg ", 1)
@@ -569,7 +630,11 @@ class CuervoIME : InputMethodService() {
     }
 
     private fun pressEnter() {
-        if (textField) learnCurrentWord()
+        lastAuto = null
+        if (fixOn) {
+            val fixed = autoCorrect()
+            if (fixed == null) learnCurrentWord() else WordStore.learn(this, fixed.second)
+        }
         val opts = currentInputEditorInfo?.imeOptions ?: 0
         val action = opts and EditorInfo.IME_MASK_ACTION
         val noEnterAction = (opts and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
